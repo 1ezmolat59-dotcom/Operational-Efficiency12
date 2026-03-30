@@ -60,7 +60,7 @@ export async function getDetailedComplianceReport(startDate: Date, endDate: Date
     if (hasPhotos) d.withPhoto++
     byDateMap.set(dateKey, d)
 
-    const s = byStaffMap.get(record.staffId) || { name: record.staff?.name || 'Unknown', scores: [], count: 0 }
+    const s = byStaffMap.get(record.staffId) || { name: record.staff?.name || 'Unknown', scores: [] as number[], count: 0 }
     s.scores.push(score)
     s.count++
     byStaffMap.set(record.staffId, s)
