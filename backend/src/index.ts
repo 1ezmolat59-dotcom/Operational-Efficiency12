@@ -13,6 +13,9 @@ import { router as transportRouter } from './routes/transport'
 import { router as scheduleRouter } from './routes/schedule'
 import { router as reportsRouter } from './routes/reports'
 import { router as suppliesRouter } from './routes/supplies'
+import { router as staffRouter } from './routes/staff'
+import { router as alertsRouter } from './routes/alerts'
+import { router as activityRouter } from './routes/activity'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
@@ -63,6 +66,9 @@ app.use('/api/transport', transportRouter)
 app.use('/api/schedule', scheduleRouter)
 app.use('/api/reports', reportsRouter)
 app.use('/api/supplies', suppliesRouter)
+app.use('/api/staff', staffRouter)
+app.use('/api/alerts', alertsRouter)
+app.use('/api/activity', activityRouter)
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Route not found', code: 'NOT_FOUND' })
