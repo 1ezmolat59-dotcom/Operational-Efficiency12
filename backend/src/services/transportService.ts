@@ -1,379 +1,228 @@
-import { JobStatus, Equipment, JobPriority, JobType } from '@prisma/client';
-import prisma from '../config/database';
-import { createAlert } from './alertService';
-import { sendJobDispatchNotification } from './notificationService';
-import { emitJobCreated, emitJobAccepted, emitJobUpdate, emitActivityEntry } from '../socket';
+import db from '../config/database'
+import { createAlert } from './alertService'
+import { sendJobDispatchNotification } from './notificationService'
+import { emitJobCreated, emitJobAccepted, emitJobUpdate, emitActivityEntry } from '../socket'
 
-// In-memory map of escalation timers per job
-const escalationTimers = new Map<string, NodeJS.Timeout>();
+const escalationTimers = new Map<string, NodeJS.Timeout>()
 
 interface CreateJobData {
-  patientId: string;
-  patientName: string;
-  requestedBy: string;
-  fromLocation: string;
-  toLocation: string;
-  roomId?: string;
-  equipment?: Equipment;
-  priority?: JobPriority;
-  jobType?: JobType;
+  patientId: string
+  patientName: string
+  requestedBy: string
+  fromLocation: string
+  toLocation: string
+  roomId?: string
+  equipment?: string
+  priority?: string
+  jobType?: string
 }
 
 export async function createJob(data: CreateJobData) {
-  const requester = await prisma.staff.findUnique({
-    where: { id: data.requestedBy },
-  });
+  const { data: requester } = await db.from('Staff').select('*').eq('id', data.requestedBy).single()
+  if (!requester) throw new Error('Requester not found')
 
-  if (!requester) {
-    throw new Error('Requester not found');
-  }
-
-  // Alert if a nurse/RN is doing transport
   if (requester.role === 'nurse') {
     await createAlert({
-      type: 'rn_doing_transport',
-      severity: 'warning',
+      type: 'rn_doing_transport', severity: 'warning',
       message: `Nurse ${requester.name} is requesting a transport job. Consider assigning to a transporter.`,
       staffId: data.requestedBy,
-    });
+    })
   }
 
-  const job = await prisma.transportJob.create({
-    data: {
+  const { data: job } = await db
+    .from('TransportJob')
+    .insert({
       patientId: data.patientId,
       patientName: data.patientName,
       requestedBy: data.requestedBy,
       fromLocation: data.fromLocation,
       toLocation: data.toLocation,
-      roomId: data.roomId,
+      roomId: data.roomId || null,
       equipment: data.equipment || 'none',
       priority: data.priority || 'routine',
       jobType: data.jobType || 'routine',
       status: 'requested',
       timestamps: { requested: new Date().toISOString() },
       requesterName: requester.name,
-    },
-    include: {
-      requester: { select: { id: true, name: true, role: true } },
-      room: true,
-    },
-  });
+    })
+    .select('*, requester:Staff!requestedBy(id,name,role)')
+    .single()
 
-  // Log activity
-  await prisma.activityLog.create({
-    data: {
-      type: 'transport_job_created',
-      message: `Transport job created for ${data.patientName} from ${data.fromLocation} to ${data.toLocation}`,
-      data: { jobId: job.id, priority: job.priority },
-      staffId: data.requestedBy,
-      jobId: job.id,
-    },
-  });
+  await db.from('ActivityLog').insert({
+    type: 'transport_job_created',
+    message: `Transport job created for ${data.patientName} from ${data.fromLocation} to ${data.toLocation}`,
+    data: { jobId: job.id, priority: job.priority },
+    staffId: data.requestedBy,
+    jobId: job.id,
+  })
 
   try {
-    emitJobCreated(job);
-    emitActivityEntry(
-      'transport_job_created',
-      `Transport job created for ${data.patientName}`,
-      { jobId: job.id, priority: job.priority },
-      new Date()
-    );
-  } catch {
-    // Socket may not be initialized
-  }
+    emitJobCreated(job)
+    emitActivityEntry('transport_job_created', `Transport job created for ${data.patientName}`, { jobId: job.id, priority: job.priority }, new Date())
+  } catch { /* Socket may not be initialized */ }
 
-  // Dispatch to nearest available transporter
-  await dispatchJob(job.id);
-
-  return job;
+  await dispatchJob(job.id)
+  return job
 }
 
 export async function dispatchJob(jobId: string): Promise<void> {
-  const job = await prisma.transportJob.findUnique({
-    where: { id: jobId },
-  });
+  const { data: job } = await db.from('TransportJob').select('*').eq('id', jobId).single()
+  if (!job) return
 
-  if (!job) return;
+  const { data: transporters } = await db
+    .from('Staff')
+    .select('*')
+    .eq('role', 'transporter')
+    .eq('availabilityStatus', true)
+    .order('updatedAt', { ascending: true })
 
-  // Find nearest available transporter (simplified: find first available)
-  const availableTransporters = await prisma.staff.findMany({
-    where: {
-      role: 'transporter',
-      availabilityStatus: true,
-    },
-    orderBy: { updatedAt: 'asc' },
-  });
-
-  // Try to find a transporter near the from location
-  let bestTransporter = availableTransporters[0];
-
-  if (!bestTransporter) {
-    console.log(`[Transport] No available transporters for job ${jobId}. Will retry.`);
-    // Create alert for supervisor
+  if (!transporters || transporters.length === 0) {
     await createAlert({
-      type: 'transport_unaccepted',
-      severity: 'warning',
-      message: `No available transporters for job ${jobId}. Patient: ${job.patientName} from ${job.fromLocation}.`,
+      type: 'transport_unaccepted', severity: 'warning',
+      message: `No available transporters for job. Patient: ${job.patientName} from ${job.fromLocation}.`,
       jobId,
-    });
-    return;
+    })
+    return
   }
 
-  // Assign job to transporter
-  const updatedTimestamps = {
-    ...(job.timestamps as Record<string, string>),
-    dispatched: new Date().toISOString(),
-  };
+  const bestTransporter = transporters[0]
+  const updatedTimestamps = { ...(job.timestamps as Record<string, string>), dispatched: new Date().toISOString() }
 
-  await prisma.transportJob.update({
-    where: { id: jobId },
-    data: {
-      assignedTo: bestTransporter.id,
-      status: 'requested',
-      timestamps: updatedTimestamps,
-    },
-  });
+  await db.from('TransportJob').update({ assignedTo: bestTransporter.id, timestamps: updatedTimestamps }).eq('id', jobId)
+  await db.from('Staff').update({ availabilityStatus: false }).eq('id', bestTransporter.id)
 
-  // Mark transporter as unavailable
-  await prisma.staff.update({
-    where: { id: bestTransporter.id },
-    data: { availabilityStatus: false },
-  });
+  await sendJobDispatchNotification(jobId, bestTransporter.id)
 
-  // Send notification
-  await sendJobDispatchNotification(jobId, bestTransporter.id);
+  const timer = setTimeout(async () => { await checkEscalation(jobId) }, 5 * 60 * 1000)
+  escalationTimers.set(jobId, timer)
 
-  // Start 5-minute escalation timer
-  const timer = setTimeout(async () => {
-    await checkEscalation(jobId);
-  }, 5 * 60 * 1000);
-
-  escalationTimers.set(jobId, timer);
-
-  console.log(`[Transport] Job ${jobId} dispatched to ${bestTransporter.name}`);
+  console.log(`[Transport] Job ${jobId} dispatched to ${bestTransporter.name}`)
 }
 
 export async function acceptJob(jobId: string, transporterId: string) {
-  const job = await prisma.transportJob.findUnique({
-    where: { id: jobId },
-    include: {
-      assignee: { select: { id: true, name: true, role: true } },
-    },
-  });
+  const { data: job } = await db
+    .from('TransportJob')
+    .select('*, assignee:Staff!assignedTo(id,name,role)')
+    .eq('id', jobId)
+    .single()
 
-  if (!job) {
-    throw new Error('Job not found');
-  }
+  if (!job) throw new Error('Job not found')
+  if (job.assignedTo !== transporterId) throw new Error('This job is not assigned to you')
+  if (job.status !== 'requested') throw new Error(`Job cannot be accepted in status: ${job.status}`)
 
-  if (job.assignedTo !== transporterId) {
-    throw new Error('This job is not assigned to you');
-  }
+  const updatedTimestamps = { ...(job.timestamps as Record<string, string>), accepted: new Date().toISOString() }
 
-  if (job.status !== 'requested') {
-    throw new Error(`Job cannot be accepted in status: ${job.status}`);
-  }
+  const { data: updatedJob } = await db
+    .from('TransportJob')
+    .update({ status: 'accepted', timestamps: updatedTimestamps })
+    .eq('id', jobId)
+    .select('*, assignee:Staff!assignedTo(id,name,role), requester:Staff!requestedBy(id,name,role)')
+    .single()
 
-  const updatedTimestamps = {
-    ...(job.timestamps as Record<string, string>),
-    accepted: new Date().toISOString(),
-  };
+  const timer = escalationTimers.get(jobId)
+  if (timer) { clearTimeout(timer); escalationTimers.delete(jobId) }
 
-  const updatedJob = await prisma.transportJob.update({
-    where: { id: jobId },
-    data: {
-      status: 'accepted',
-      timestamps: updatedTimestamps,
-    },
-    include: {
-      assignee: { select: { id: true, name: true, role: true } },
-      requester: { select: { id: true, name: true, role: true } },
-    },
-  });
-
-  // Cancel the escalation timer
-  const timer = escalationTimers.get(jobId);
-  if (timer) {
-    clearTimeout(timer);
-    escalationTimers.delete(jobId);
-  }
-
-  // Log activity
-  await prisma.activityLog.create({
-    data: {
-      type: 'transport_job_accepted',
-      message: `Job accepted by ${updatedJob.assignee?.name}`,
-      data: { jobId, transporterId },
-      staffId: transporterId,
-      jobId,
-    },
-  });
+  await db.from('ActivityLog').insert({
+    type: 'transport_job_accepted',
+    message: `Job accepted by ${updatedJob.assignee?.name}`,
+    data: { jobId, transporterId },
+    staffId: transporterId, jobId,
+  })
 
   try {
-    emitJobAccepted(jobId, transporterId, updatedJob.assignee!);
-    emitJobUpdate(jobId, 'accepted', updatedTimestamps);
-  } catch {
-    // Socket may not be initialized
-  }
+    emitJobAccepted(jobId, transporterId, updatedJob.assignee)
+    emitJobUpdate(jobId, 'accepted', updatedTimestamps)
+  } catch { /* Socket may not be initialized */ }
 
-  return updatedJob;
+  return updatedJob
 }
 
-export async function updateJobStatus(
-  jobId: string,
-  status: JobStatus,
-  transporterId: string
-) {
-  const job = await prisma.transportJob.findUnique({
-    where: { id: jobId },
-  });
+export async function updateJobStatus(jobId: string, status: string, transporterId: string) {
+  const { data: job } = await db.from('TransportJob').select('*').eq('id', jobId).single()
+  if (!job) throw new Error('Job not found')
+  if (job.assignedTo !== transporterId) throw new Error('You are not assigned to this job')
 
-  if (!job) {
-    throw new Error('Job not found');
-  }
-
-  if (job.assignedTo !== transporterId) {
-    throw new Error('You are not assigned to this job');
-  }
-
-  // Validate status transitions
-  const validTransitions: Record<string, JobStatus[]> = {
+  const validTransitions: Record<string, string[]> = {
     accepted: ['in_progress', 'cancelled'],
     in_progress: ['complete', 'cancelled'],
-  };
-
-  const allowed = validTransitions[job.status] || [];
-  if (!allowed.includes(status)) {
-    throw new Error(`Cannot transition from ${job.status} to ${status}`);
   }
+  const allowed = validTransitions[job.status] || []
+  if (!allowed.includes(status)) throw new Error(`Cannot transition from ${job.status} to ${status}`)
 
-  const timestampKey = status === 'in_progress' ? 'en_route' : status;
-  const updatedTimestamps = {
-    ...(job.timestamps as Record<string, string>),
-    [timestampKey]: new Date().toISOString(),
-  };
+  const timestampKey = status === 'in_progress' ? 'en_route' : status
+  const updatedTimestamps = { ...(job.timestamps as Record<string, string>), [timestampKey]: new Date().toISOString() }
 
-  const updatedJob = await prisma.transportJob.update({
-    where: { id: jobId },
-    data: {
-      status,
-      timestamps: updatedTimestamps,
-    },
-    include: {
-      assignee: { select: { id: true, name: true } },
-      requester: { select: { id: true, name: true } },
-    },
-  });
+  const { data: updatedJob } = await db
+    .from('TransportJob')
+    .update({ status, timestamps: updatedTimestamps })
+    .eq('id', jobId)
+    .select('*, assignee:Staff!assignedTo(id,name), requester:Staff!requestedBy(id,name)')
+    .single()
 
-  // If completed, mark transporter as available again
   if (status === 'complete' || status === 'cancelled') {
-    await prisma.staff.update({
-      where: { id: transporterId },
-      data: { availabilityStatus: true },
-    });
+    await db.from('Staff').update({ availabilityStatus: true }).eq('id', transporterId)
   }
 
-  // Log activity
-  await prisma.activityLog.create({
-    data: {
-      type: 'transport_job_status_updated',
-      message: `Job ${jobId} status updated to ${status}`,
-      data: { jobId, status, transporterId },
-      staffId: transporterId,
-      jobId,
-    },
-  });
+  await db.from('ActivityLog').insert({
+    type: 'transport_job_status_updated',
+    message: `Job status updated to ${status}`,
+    data: { jobId, status, transporterId },
+    staffId: transporterId, jobId,
+  })
 
   try {
-    emitJobUpdate(jobId, status, updatedTimestamps);
-    emitActivityEntry(
-      'transport_job_status_updated',
-      `Transport job status updated to ${status}`,
-      { jobId, status },
-      new Date()
-    );
-  } catch {
-    // Socket may not be initialized
-  }
+    emitJobUpdate(jobId, status, updatedTimestamps)
+    emitActivityEntry('transport_job_status_updated', `Transport job status updated to ${status}`, { jobId, status }, new Date())
+  } catch { /* Socket may not be initialized */ }
 
-  return updatedJob;
+  return updatedJob
 }
 
 export async function checkEscalation(jobId: string): Promise<void> {
-  const job = await prisma.transportJob.findUnique({
-    where: { id: jobId },
-  });
+  const { data: job } = await db.from('TransportJob').select('*').eq('id', jobId).single()
+  if (!job || job.status !== 'requested') return
 
-  if (!job) return;
+  await createAlert({
+    type: 'transport_unaccepted', severity: 'critical',
+    message: `Transport job not accepted within 5 minutes. Patient: ${job.patientName} from ${job.fromLocation} to ${job.toLocation}.`,
+    jobId,
+  })
 
-  // If job hasn't been accepted yet, escalate
-  if (job.status === 'requested') {
-    console.log(`[Transport] Escalating job ${jobId} - not accepted within 5 minutes`);
-
-    await createAlert({
-      type: 'transport_unaccepted',
-      severity: 'critical',
-      message: `Transport job not accepted within 5 minutes. Patient: ${job.patientName} from ${job.fromLocation} to ${job.toLocation}.`,
-      jobId,
-    });
-
-    // Find supervisors to notify
-    const supervisors = await prisma.staff.findMany({
-      where: { role: { in: ['supervisor', 'admin'] } },
-    });
-
-    for (const supervisor of supervisors) {
-      await prisma.activityLog.create({
-        data: {
-          type: 'transport_escalation',
-          message: `Transport job ${jobId} escalated to ${supervisor.name}`,
-          data: { jobId, reason: 'Not accepted within 5 minutes' },
-          staffId: supervisor.id,
-          jobId,
-        },
-      });
-    }
-
-    escalationTimers.delete(jobId);
+  const { data: supervisors } = await db.from('Staff').select('*').in('role', ['supervisor', 'admin'])
+  for (const supervisor of supervisors || []) {
+    await db.from('ActivityLog').insert({
+      type: 'transport_escalation',
+      message: `Transport job escalated to ${supervisor.name}`,
+      data: { jobId, reason: 'Not accepted within 5 minutes' },
+      staffId: supervisor.id, jobId,
+    })
   }
+
+  escalationTimers.delete(jobId)
 }
 
 export async function getJobWithHistory(jobId: string) {
-  return prisma.transportJob.findUnique({
-    where: { id: jobId },
-    include: {
-      requester: { select: { id: true, name: true, role: true } },
-      assignee: { select: { id: true, name: true, role: true } },
-      room: true,
-    },
-  });
+  const { data } = await db
+    .from('TransportJob')
+    .select('*, requester:Staff!requestedBy(id,name,role), assignee:Staff!assignedTo(id,name,role), room:Room(*)')
+    .eq('id', jobId)
+    .single()
+  return data
 }
 
-export async function listJobs(
-  requesterId: string,
-  requesterRole: string,
-  statusFilter?: string,
-  assignedToFilter?: string
-) {
-  const where: Record<string, unknown> = {};
+export async function listJobs(requesterId: string, requesterRole: string, statusFilter?: string, assignedToFilter?: string) {
+  let query = db
+    .from('TransportJob')
+    .select('*, requester:Staff!requestedBy(id,name,role), assignee:Staff!assignedTo(id,name,role), room:Room(*)')
+    .order('createdAt', { ascending: false })
 
-  if (statusFilter) {
-    where.status = statusFilter as JobStatus;
-  }
-
-  // Transporters can only see their own jobs
+  if (statusFilter) query = query.eq('status', statusFilter)
   if (requesterRole === 'transporter') {
-    where.assignedTo = requesterId;
+    query = query.eq('assignedTo', requesterId)
   } else if (assignedToFilter) {
-    where.assignedTo = assignedToFilter;
+    query = query.eq('assignedTo', assignedToFilter)
   }
 
-  return prisma.transportJob.findMany({
-    where,
-    include: {
-      requester: { select: { id: true, name: true, role: true } },
-      assignee: { select: { id: true, name: true, role: true } },
-      room: true,
-    },
-    orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
-  });
+  const { data } = await query
+  return data || []
 }

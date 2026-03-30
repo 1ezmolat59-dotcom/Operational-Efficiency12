@@ -1,241 +1,175 @@
-import prisma from '../config/database';
-import { ShiftType } from '@prisma/client';
-import { ForecastDay, StaffingSuggestion } from '../types';
+import db from '../config/database'
+import { ForecastDay, StaffingSuggestion } from '../types'
 
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 export async function getForecast(days: number = 7): Promise<ForecastDay[]> {
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
-  // Fetch all clean records from the last 90 days
-  const records = await prisma.cleanRecord.findMany({
-    where: {
-      startedAt: { gte: ninetyDaysAgo },
-      completedAt: { not: null },
-    },
-    select: {
-      startedAt: true,
-    },
-  });
+  const { data: records } = await db
+    .from('CleanRecord')
+    .select('startedAt')
+    .gte('startedAt', ninetyDaysAgo)
+    .not('completedAt', 'is', null)
 
-  // Group by day of week (0=Sunday ... 6=Saturday)
-  // Weight recent 30 days 2x
-  const dayWeightedCounts: number[] = new Array(7).fill(0);
-  const dayTotalWeeks: number[] = new Array(7).fill(0);
+  const dayWeightedCounts = new Array(7).fill(0)
+  const dayTotalWeeks = new Array(7).fill(0)
 
-  for (const record of records) {
-    const dow = record.startedAt.getDay();
-    const isRecent = record.startedAt >= thirtyDaysAgo;
-    const weight = isRecent ? 2 : 1;
-    dayWeightedCounts[dow] += weight;
-    dayTotalWeeks[dow] += weight;
+  for (const record of records || []) {
+    const dow = new Date(record.startedAt).getDay()
+    const isRecent = record.startedAt >= thirtyDaysAgo
+    const weight = isRecent ? 2 : 1
+    dayWeightedCounts[dow] += weight
+    dayTotalWeeks[dow] += weight
   }
 
-  // Calculate number of weeks in each window
-  const totalDays90 = 90;
-  const weeksIn90 = totalDays90 / 7;
+  const weeksIn90 = 90 / 7
+  const avgTasksPerDow = dayWeightedCounts.map((count, i) => {
+    const totalWeight = dayTotalWeeks[i]
+    if (totalWeight === 0) return 2
+    return count / (weeksIn90 * 1.5)
+  })
 
-  // Average tasks per day of week (weighted)
-  const avgTasksPerDow: number[] = dayWeightedCounts.map((count, i) => {
-    const totalWeight = dayTotalWeeks[i];
-    if (totalWeight === 0) return 2; // Default if no data
-    // Each day of week appears ~weeksIn90 times in 90 days, but recent ones are weighted 2x
-    return count / (weeksIn90 * 1.5); // Approximate divisor for weighted average
-  });
-
-  // Generate forecast for the next N days
-  const forecast: ForecastDay[] = [];
-  const today = new Date();
-
+  const forecast: ForecastDay[] = []
+  const today = new Date()
   for (let i = 0; i < days; i++) {
-    const date = new Date(today);
-    date.setDate(today.getDate() + i);
-    const dow = date.getDay();
-    const predictedTasks = Math.max(1, Math.round(avgTasksPerDow[dow]));
-    // Assume 1 housekeeper can handle ~8 tasks per shift
-    const recommendedStaff = Math.max(1, Math.ceil(predictedTasks / 8));
-
+    const date = new Date(today)
+    date.setDate(today.getDate() + i)
+    const dow = date.getDay()
+    const predictedTasks = Math.max(1, Math.round(avgTasksPerDow[dow]))
     forecast.push({
       date: date.toISOString().split('T')[0],
       dayOfWeek: DAY_NAMES[dow],
       predictedTasks,
-      recommendedStaff,
-    });
+      recommendedStaff: Math.max(1, Math.ceil(predictedTasks / 8)),
+    })
   }
-
-  return forecast;
+  return forecast
 }
 
-export async function getSuggestions(
-  startDate: Date,
-  endDate: Date
-): Promise<StaffingSuggestion[]> {
-  const forecast = await getForecast(7);
-
-  const suggestions: StaffingSuggestion[] = [];
+export async function getSuggestions(startDate: Date, endDate: Date): Promise<StaffingSuggestion[]> {
+  const forecast = await getForecast(7)
+  const suggestions: StaffingSuggestion[] = []
 
   for (const forecastDay of forecast) {
-    const date = new Date(forecastDay.date);
-    const dateStart = new Date(date);
-    dateStart.setHours(0, 0, 0, 0);
-    const dateEnd = new Date(date);
-    dateEnd.setHours(23, 59, 59, 999);
+    const dateStart = new Date(forecastDay.date + 'T00:00:00Z').toISOString()
+    const dateEnd = new Date(forecastDay.date + 'T23:59:59Z').toISOString()
 
-    // Count currently scheduled housekeepers for this day
-    const scheduledStaff = await prisma.schedule.findMany({
-      where: {
-        date: {
-          gte: dateStart,
-          lte: dateEnd,
-        },
-        shiftType: { in: [ShiftType.day, ShiftType.evening, ShiftType.overtime] },
-      },
-      include: {
-        staff: { select: { id: true, name: true, role: true } },
-      },
-    });
+    const { data: scheduledStaff } = await db
+      .from('Schedule')
+      .select('*, staff:Staff(id,name,role)')
+      .gte('date', dateStart)
+      .lte('date', dateEnd)
+      .in('shiftType', ['day', 'evening', 'overtime'])
 
-    const activeSchedules = scheduledStaff.filter(
-      (s) => s.staff.role === 'housekeeper' || s.staff.role === 'transporter'
-    );
-    const currentStaffCount = activeSchedules.length;
-    const requiredStaffCount = forecastDay.recommendedStaff;
-
-    // Check if below 85% capacity
-    const capacityRatio = requiredStaffCount > 0 ? currentStaffCount / requiredStaffCount : 1;
+    const activeSchedules = (scheduledStaff || []).filter(
+      (s: any) => s.staff.role === 'housekeeper' || s.staff.role === 'transporter'
+    )
+    const currentStaffCount = activeSchedules.length
+    const requiredStaffCount = forecastDay.recommendedStaff
+    const capacityRatio = requiredStaffCount > 0 ? currentStaffCount / requiredStaffCount : 1
 
     if (capacityRatio < 0.85) {
-      const gap = requiredStaffCount - currentStaffCount;
+      const gap = requiredStaffCount - currentStaffCount
 
-      // Find staff who are off or not scheduled
-      const offStaff = await prisma.schedule.findMany({
-        where: {
-          date: {
-            gte: dateStart,
-            lte: dateEnd,
-          },
-          shiftType: ShiftType.off,
-        },
-        include: {
-          staff: { select: { id: true, name: true, role: true } },
-        },
-      });
+      const { data: offStaff } = await db
+        .from('Schedule')
+        .select('*, staff:Staff(id,name,role)')
+        .gte('date', dateStart)
+        .lte('date', dateEnd)
+        .eq('shiftType', 'off')
 
-      // Find housekeepers with no schedule for this day
-      const allHousekeepers = await prisma.staff.findMany({
-        where: {
-          role: { in: ['housekeeper', 'transporter'] },
-          availabilityStatus: true,
-        },
-      });
+      const { data: allHousekeepers } = await db
+        .from('Staff')
+        .select('*')
+        .in('role', ['housekeeper', 'transporter'])
+        .eq('availabilityStatus', true)
 
-      const scheduledIds = new Set(activeSchedules.map((s) => s.staffId));
-      const unscheduledStaff = allHousekeepers.filter((s) => !scheduledIds.has(s.id));
+      const scheduledIds = new Set(activeSchedules.map((s: any) => s.staffId))
+      const unscheduled = (allHousekeepers || []).filter((s: any) => !scheduledIds.has(s.id))
 
-      const suggestedChanges: StaffingSuggestion['suggestedChanges'] = [];
+      const suggestedChanges: StaffingSuggestion['suggestedChanges'] = []
 
-      // First suggest changing off-shifts to day shifts
-      for (const offSchedule of offStaff.slice(0, gap)) {
+      for (const off of (offStaff || []).slice(0, gap)) {
         suggestedChanges.push({
-          staffId: offSchedule.staffId,
-          staffName: offSchedule.staff.name,
-          currentShift: ShiftType.off,
-          suggestedShift: ShiftType.day,
+          staffId: off.staffId,
+          staffName: off.staff.name,
+          currentShift: 'off',
+          suggestedShift: 'day',
           reason: `High predicted demand on ${forecastDay.dayOfWeek} (${forecastDay.predictedTasks} tasks expected)`,
-        });
+        })
       }
 
-      // Then suggest adding unscheduled staff
-      const remainingGap = gap - suggestedChanges.length;
-      for (const staff of unscheduledStaff.slice(0, remainingGap)) {
+      const remainingGap = gap - suggestedChanges.length
+      for (const staff of unscheduled.slice(0, remainingGap)) {
         suggestedChanges.push({
           staffId: staff.id,
           staffName: staff.name,
           currentShift: null,
-          suggestedShift: ShiftType.day,
-          reason: `Understaffed on ${forecastDay.dayOfWeek} (${currentStaffCount}/${requiredStaffCount} required staff)`,
-        });
+          suggestedShift: 'day',
+          reason: `Understaffed on ${forecastDay.dayOfWeek} (${currentStaffCount}/${requiredStaffCount} required)`,
+        })
       }
 
-      // Suggest overtime for existing staff if still not enough
-      const stillMissingGap = gap - suggestedChanges.length;
-      if (stillMissingGap > 0) {
-        for (const schedule of activeSchedules.slice(0, stillMissingGap)) {
-          suggestedChanges.push({
-            staffId: schedule.staffId,
-            staffName: schedule.staff.name,
-            currentShift: schedule.shiftType as ShiftType,
-            suggestedShift: ShiftType.overtime,
-            reason: `Insufficient staff coverage, overtime recommended`,
-          });
-        }
-      }
-
-      suggestions.push({
-        date: forecastDay.date,
-        currentStaffCount,
-        requiredStaffCount,
-        gap,
-        suggestedChanges,
-      });
+      suggestions.push({ date: forecastDay.date, currentStaffCount, requiredStaffCount, gap, suggestedChanges })
     }
   }
 
-  return suggestions;
+  return suggestions
 }
 
 export async function getWeeklySchedule(wingId: string, weekStart: Date) {
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 6);
-  weekEnd.setHours(23, 59, 59, 999);
+  const weekEnd = new Date(weekStart)
+  weekEnd.setDate(weekStart.getDate() + 6)
+  weekEnd.setHours(23, 59, 59, 999)
 
-  const staff = await prisma.staff.findMany({
-    where: { wingId },
-    include: {
-      schedules: {
-        where: {
-          date: {
-            gte: weekStart,
-            lte: weekEnd,
-          },
-        },
-        orderBy: { date: 'asc' },
-      },
-    },
-  });
+  const { data: staff } = await db.from('Staff').select('id,name,role').eq('wingId', wingId)
 
-  return staff.map((member) => ({
+  const { data: schedules } = await db
+    .from('Schedule')
+    .select('*')
+    .gte('date', weekStart.toISOString())
+    .lte('date', weekEnd.toISOString())
+    .in('staffId', (staff || []).map((s: any) => s.id))
+    .order('date', { ascending: true })
+
+  return (staff || []).map((member: any) => ({
     staffId: member.id,
     name: member.name,
     role: member.role,
-    schedules: member.schedules,
-  }));
+    schedules: (schedules || []).filter((s: any) => s.staffId === member.id),
+  }))
 }
 
-export async function setShift(
-  staffId: string,
-  date: Date,
-  shiftType: ShiftType
-) {
-  const dateOnly = new Date(date);
-  dateOnly.setHours(0, 0, 0, 0);
+export async function setShift(staffId: string, date: Date, shiftType: string) {
+  const dateOnly = new Date(date)
+  dateOnly.setHours(0, 0, 0, 0)
 
-  return prisma.schedule.upsert({
-    where: {
-      staffId_date: {
-        staffId,
-        date: dateOnly,
-      },
-    },
-    update: { shiftType },
-    create: {
-      staffId,
-      date: dateOnly,
-      shiftType,
-    },
-    include: {
-      staff: { select: { id: true, name: true, role: true } },
-    },
-  });
+  const { data: staff } = await db.from('Staff').select('id').eq('id', staffId).single()
+  if (!staff) throw new Error('Staff not found')
+
+  const { data: existing } = await db
+    .from('Schedule')
+    .select('id')
+    .eq('staffId', staffId)
+    .eq('date', dateOnly.toISOString())
+    .single()
+
+  if (existing) {
+    const { data } = await db
+      .from('Schedule')
+      .update({ shiftType })
+      .eq('id', existing.id)
+      .select('*, staff:Staff(id,name,role)')
+      .single()
+    return data
+  } else {
+    const { data } = await db
+      .from('Schedule')
+      .insert({ staffId, date: dateOnly.toISOString(), shiftType })
+      .select('*, staff:Staff(id,name,role)')
+      .single()
+    return data
+  }
 }
