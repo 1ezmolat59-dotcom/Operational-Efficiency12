@@ -16,7 +16,7 @@ import { router as suppliesRouter } from './routes/supplies'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
-const isVercel = !!process.env.VERCEL
+const isServerless = !!process.env.VERCEL
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -49,7 +49,7 @@ app.get('/health', async (_req, res) => {
       timestamp: new Date().toISOString(),
       service: 'hospital-ops-backend',
       database: 'connected',
-      realtime: isVercel ? 'disabled (serverless)' : 'enabled',
+      realtime: isServerless ? 'disabled (serverless)' : 'enabled',
       version: process.env.npm_package_version || '1.0.0',
     })
   } catch {
@@ -73,8 +73,8 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message, code: 'SERVER_ERROR' })
 })
 
-// In Vercel serverless, we export app directly — no listen(), no Socket.io
-if (!isVercel) {
+// On Railway/local: start HTTP server + Socket.io. On Vercel serverless: export app only.
+if (!isServerless) {
   const httpServer = http.createServer(app)
   initializeSocket(httpServer)
 
