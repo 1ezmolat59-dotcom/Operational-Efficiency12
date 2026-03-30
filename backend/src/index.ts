@@ -1,4 +1,4 @@
-if (!process.env.VERCEL) { require('dotenv').config() }
+import 'dotenv/config'
 import http from 'http'
 import express from 'express'
 import helmet from 'helmet'
