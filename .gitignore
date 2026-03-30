@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment files — NEVER commit these
+.env
+.env.local
+.env.*.local
+backend/.env
+web/.env
+mobile/.env
+
+# Build outputs
+dist/
+build/
+.expo/
+.expo-shared/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Prisma
+backend/prisma/migrations/
+
+# Supabase local dev (not the migrations themselves)
+supabase/.branches
+supabase/.temp
+
+# Mobile
+mobile/.expo/
+mobile/android/
+mobile/ios/

@@ -1,0 +1,219 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Wing {
+  id        String   @id @default(cuid())
+  name      String
+  rooms     Room[]
+  staff     Staff[]
+  createdAt DateTime @default(now())
+}
+
+model Room {
+  id                        String        @id @default(cuid())
+  wingId                    String
+  wing                      Wing          @relation(fields: [wingId], references: [id])
+  roomNumber                String
+  roomType                  RoomType
+  status                    RoomStatus    @default(dirty)
+  currentPatientId          String?
+  patientName               String?
+  lastCleanId               String?
+  mobilityEquipmentRequired Boolean       @default(false)
+  isLockIn                  Boolean       @default(false)
+  cleanRecords              CleanRecord[]
+  transportJobs             TransportJob[]
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+}
+
+enum RoomType {
+  single
+  double
+  isolation
+}
+
+enum RoomStatus {
+  dirty
+  in_progress
+  clean_ready
+  occupied
+  offline
+}
+
+model CleanRecord {
+  id              String    @id @default(cuid())
+  roomId          String
+  room            Room      @relation(fields: [roomId], references: [id])
+  staffId         String
+  staff           Staff     @relation(fields: [staffId], references: [id])
+  cleanType       CleanType
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  stepsCompleted  Json?
+  photos          Json?
+  complianceScore Float?
+  duration        Int?
+  createdAt       DateTime  @default(now())
+}
+
+enum CleanType {
+  discharge
+  checkout
+  routine
+}
+
+model TransportJob {
+  id           String       @id @default(cuid())
+  patientId    String
+  patientName  String
+  requestedBy  String
+  requester    Staff        @relation("requester", fields: [requestedBy], references: [id])
+  assignedTo   String?
+  assignee     Staff?       @relation("assignee", fields: [assignedTo], references: [id])
+  fromLocation String
+  toLocation   String
+  roomId       String?
+  room         Room?        @relation(fields: [roomId], references: [id])
+  equipment    Equipment    @default(none)
+  priority     JobPriority  @default(routine)
+  jobType      JobType      @default(routine)
+  status       JobStatus    @default(requested)
+  timestamps   Json         @default("{}")
+  requesterName String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+enum Equipment {
+  wheelchair
+  stretcher
+  none
+}
+
+enum JobPriority {
+  stat
+  routine
+}
+
+enum JobType {
+  stat
+  radiology
+  discharge
+  routine
+}
+
+enum JobStatus {
+  requested
+  accepted
+  in_progress
+  complete
+  cancelled
+}
+
+model Staff {
+  id                 String         @id @default(cuid())
+  name               String
+  email              String         @unique
+  passwordHash       String
+  role               StaffRole
+  wingId             String?
+  wing               Wing?          @relation(fields: [wingId], references: [id])
+  currentLocation    String?
+  availabilityStatus Boolean        @default(true)
+  shiftStart         DateTime?
+  shiftEnd           DateTime?
+  cleanRecords       CleanRecord[]
+  requestedJobs      TransportJob[] @relation("requester")
+  assignedJobs       TransportJob[] @relation("assignee")
+  schedules          Schedule[]
+  supplyLogs         SupplyLog[]
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+}
+
+enum StaffRole {
+  housekeeper
+  transporter
+  supervisor
+  admin
+  nurse
+}
+
+model Schedule {
+  id        String    @id @default(cuid())
+  staffId   String
+  staff     Staff     @relation(fields: [staffId], references: [id])
+  date      DateTime
+  shiftType ShiftType
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([staffId, date])
+}
+
+enum ShiftType {
+  day
+  evening
+  off
+  overtime
+}
+
+model Alert {
+  id        String        @id @default(cuid())
+  type      AlertType
+  severity  AlertSeverity
+  message   String
+  roomId    String?
+  staffId   String?
+  jobId     String?
+  resolved  Boolean       @default(false)
+  createdAt DateTime      @default(now())
+}
+
+enum AlertType {
+  bed_unassigned
+  transport_unaccepted
+  long_turnaround
+  linen_overage
+  rn_doing_transport
+  staff_no_show
+  checklist_skipped
+}
+
+enum AlertSeverity {
+  info
+  warning
+  critical
+}
+
+model SupplyLog {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id])
+  roomId      String
+  sheets      Int      @default(0)
+  pillowcases Int      @default(0)
+  towels      Int      @default(0)
+  gowns       Int      @default(0)
+  flaggedLow  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  type      String
+  message   String
+  data      Json?
+  staffId   String?
+  roomId    String?
+  jobId     String?
+  createdAt DateTime @default(now())
+}

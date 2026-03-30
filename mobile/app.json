@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Hospital Ops",
+    "slug": "hospital-ops",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0d9488"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.hospitalops.mobile"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0d9488"
+      },
+      "package": "com.hospitalops.mobile",
+      "permissions": ["CAMERA"]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Required to capture room photos for compliance verification.",
+          "cameraPermission": "Required to capture room photos for compliance verification."
+        }
+      ]
+    ],
+    "scheme": "hospital-ops",
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "apiUrl": "http://localhost:3001"
+    }
+  }
+}
