@@ -23,7 +23,7 @@ const updateStatusSchema = z.object({
   status: z.enum(['accepted', 'in_progress', 'complete', 'cancelled']),
 })
 
-router.get('/jobs', async (req: AuthRequest, res: Response): Promise<void> => {
+router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!
     const statusFilter = req.query.status as string | undefined
@@ -37,20 +37,20 @@ router.get('/jobs', async (req: AuthRequest, res: Response): Promise<void> => {
       patientName: canSeePHI ? job.patientName : `Patient #${job.patientId.slice(-4)}`,
     }))
 
-    res.json({ jobs: sanitizedJobs })
+    res.json(sanitizedJobs)
   } catch (error) {
     console.error('[Transport] List jobs error:', error)
     res.status(500).json({ error: 'Failed to fetch jobs', code: 'SERVER_ERROR' })
   }
 })
 
-router.post('/jobs', requireRole('nurse', 'supervisor', 'admin', 'transporter'), async (req: AuthRequest, res: Response): Promise<void> => {
+router.post('/', requireRole('nurse', 'supervisor', 'admin', 'transporter'), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const parsed = createJobSchema.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: parsed.error.errors[0].message, code: 'VALIDATION_ERROR', details: parsed.error.errors }); return }
 
     const job = await createJob({ ...parsed.data, requestedBy: req.user!.userId })
-    res.status(201).json({ job })
+    res.status(201).json(job)
   } catch (error) {
     if (error instanceof Error && error.message === 'Requester not found') {
       res.status(404).json({ error: error.message, code: 'NOT_FOUND' }); return
@@ -60,10 +60,10 @@ router.post('/jobs', requireRole('nurse', 'supervisor', 'admin', 'transporter'),
   }
 })
 
-router.patch('/jobs/:id/accept', requireRole('transporter'), async (req: AuthRequest, res: Response): Promise<void> => {
+router.post('/:id/accept', requireRole('transporter'), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const job = await acceptJob(req.params.id, req.user!.userId)
-    res.json({ job })
+    res.json(job)
   } catch (error) {
     if (error instanceof Error) {
       if (error.message === 'Job not found') { res.status(404).json({ error: error.message, code: 'NOT_FOUND' }); return }
@@ -76,13 +76,13 @@ router.patch('/jobs/:id/accept', requireRole('transporter'), async (req: AuthReq
   }
 })
 
-router.patch('/jobs/:id/status', requireRole('transporter', 'supervisor', 'admin'), async (req: AuthRequest, res: Response): Promise<void> => {
+router.patch('/:id/status', requireRole('transporter', 'supervisor', 'admin'), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const parsed = updateStatusSchema.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: parsed.error.errors[0].message, code: 'VALIDATION_ERROR' }); return }
 
     const job = await updateJobStatus(req.params.id, parsed.data.status, req.user!.userId)
-    res.json({ job })
+    res.json(job)
   } catch (error) {
     if (error instanceof Error) {
       if (error.message === 'Job not found') { res.status(404).json({ error: error.message, code: 'NOT_FOUND' }); return }
@@ -95,7 +95,7 @@ router.patch('/jobs/:id/status', requireRole('transporter', 'supervisor', 'admin
   }
 })
 
-router.get('/jobs/:id', async (req: AuthRequest, res: Response): Promise<void> => {
+router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const job = await getJobWithHistory(req.params.id)
     if (!job) { res.status(404).json({ error: 'Job not found', code: 'NOT_FOUND' }); return }
