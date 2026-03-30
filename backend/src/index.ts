@@ -5,7 +5,7 @@ import helmet from 'helmet'
 import cors from 'cors'
 import morgan from 'morgan'
 import db from './config/database'
-import { initializeSocket } from './socket'
+import { initializeSocket } from './socket/index'
 
 import { router as authRouter } from './routes/auth'
 import { router as roomsRouter } from './routes/rooms'
@@ -16,6 +16,7 @@ import { router as suppliesRouter } from './routes/supplies'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
+const isVercel = !!process.env.VERCEL
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -43,7 +44,14 @@ app.get('/health', async (_req, res) => {
   try {
     const { error } = await db.from('Wing').select('id').limit(1)
     if (error) throw error
-    res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'hospital-ops-backend', database: 'connected', version: process.env.npm_package_version || '1.0.0' })
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      service: 'hospital-ops-backend',
+      database: 'connected',
+      realtime: isVercel ? 'disabled (serverless)' : 'enabled',
+      version: process.env.npm_package_version || '1.0.0',
+    })
   } catch {
     res.status(503).json({ status: 'error', timestamp: new Date().toISOString(), service: 'hospital-ops-backend', database: 'disconnected' })
   }
@@ -65,26 +73,27 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message, code: 'SERVER_ERROR' })
 })
 
-const httpServer = http.createServer(app)
-initializeSocket(httpServer)
+// In Vercel serverless, we export app directly — no listen(), no Socket.io
+if (!isVercel) {
+  const httpServer = http.createServer(app)
+  initializeSocket(httpServer)
 
-httpServer.listen(PORT, () => {
-  console.log(`\n🏥 Hospital Ops Backend running on port ${PORT}`)
-  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`)
-  console.log(`   Health check: http://localhost:${PORT}/health\n`)
-})
-
-async function shutdown(signal: string): Promise<void> {
-  console.log(`\n[Server] Received ${signal}. Shutting down gracefully...`)
-  httpServer.close(() => {
-    console.log('[Server] HTTP server closed')
-    process.exit(0)
+  httpServer.listen(PORT, () => {
+    console.log(`\n🏥 Hospital Ops Backend running on port ${PORT}`)
+    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`)
+    console.log(`   Health check: http://localhost:${PORT}/health\n`)
   })
-  setTimeout(() => { console.error('[Server] Forced shutdown after timeout'); process.exit(1) }, 10_000)
+
+  const shutdown = (signal: string) => {
+    console.log(`\n[Server] Received ${signal}. Shutting down gracefully...`)
+    httpServer.close(() => { console.log('[Server] HTTP server closed'); process.exit(0) })
+    setTimeout(() => { console.error('[Server] Forced shutdown after timeout'); process.exit(1) }, 10_000)
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'))
-process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('unhandledRejection', (reason, promise) => { console.error('[Server] Unhandled Rejection at:', promise, 'reason:', reason) })
 process.on('uncaughtException', (error) => { console.error('[Server] Uncaught Exception:', error); process.exit(1) })
 

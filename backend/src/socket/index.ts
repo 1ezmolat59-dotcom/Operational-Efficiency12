@@ -71,97 +71,71 @@ export function initializeSocket(httpServer: HttpServer): SocketIOServer {
   return io;
 }
 
-export function getIO(): SocketIOServer {
-  if (!io) {
-    throw new Error('Socket.io has not been initialized. Call initializeSocket first.');
-  }
-  return io;
+export function getIO(): SocketIOServer | null {
+  return io || null
 }
 
-// Emit helpers
-export function emitRoomUpdate(
-  roomId: string,
-  status: string,
-  roomNumber: string,
-  wingId?: string | null
-): void {
-  const payload = { roomId, status, roomNumber, updatedAt: new Date() };
-  io.to('ops-room').emit('room:status-updated', payload);
-  if (wingId) {
-    io.to(`wing:${wingId}`).emit('room:status-updated', payload);
-  }
+// Emit helpers — all silently no-op when Socket.io is not initialized (e.g. Vercel serverless)
+export function emitRoomUpdate(roomId: string, status: string, roomNumber: string, wingId?: string | null): void {
+  if (!io) return
+  const payload = { roomId, status, roomNumber, updatedAt: new Date() }
+  io.to('ops-room').emit('room:status-updated', payload)
+  if (wingId) io.to(`wing:${wingId}`).emit('room:status-updated', payload)
 }
 
-export function emitRoomCompleted(
-  roomId: string,
-  cleanRecord: object,
-  turnaroundMinutes: number,
-  wingId?: string | null
-): void {
-  const payload = { roomId, cleanRecord, turnaroundMinutes };
-  io.to('ops-room').emit('room:completed', payload);
-  if (wingId) {
-    io.to(`wing:${wingId}`).emit('room:completed', payload);
-  }
+export function emitRoomCompleted(roomId: string, cleanRecord: object, turnaroundMinutes: number, wingId?: string | null): void {
+  if (!io) return
+  const payload = { roomId, cleanRecord, turnaroundMinutes }
+  io.to('ops-room').emit('room:completed', payload)
+  if (wingId) io.to(`wing:${wingId}`).emit('room:completed', payload)
 }
 
 export function emitRoomAssigned(roomId: string, patientName: string, nurseId: string): void {
-  const payload = { roomId, patientName, nurseId };
-  io.to('ops-room').emit('room:assigned', payload);
-  io.to(`role:nurse`).emit('room:assigned', payload);
+  if (!io) return
+  const payload = { roomId, patientName, nurseId }
+  io.to('ops-room').emit('room:assigned', payload)
+  io.to('role:nurse').emit('room:assigned', payload)
 }
 
-export function emitJobUpdate(
-  jobId: string,
-  status: string,
-  timestamps: object
-): void {
-  const payload = { jobId, status, timestamps };
-  io.to('ops-room').emit('transport:job-updated', payload);
-  io.to('role:transporter').emit('transport:job-updated', payload);
+export function emitJobUpdate(jobId: string, status: string, timestamps: object): void {
+  if (!io) return
+  const payload = { jobId, status, timestamps }
+  io.to('ops-room').emit('transport:job-updated', payload)
+  io.to('role:transporter').emit('transport:job-updated', payload)
 }
 
 export function emitJobCreated(job: object): void {
-  const payload = { job };
-  io.to('ops-room').emit('transport:job-created', payload);
-  io.to('role:transporter').emit('transport:job-created', payload);
+  if (!io) return
+  const payload = { job }
+  io.to('ops-room').emit('transport:job-created', payload)
+  io.to('role:transporter').emit('transport:job-created', payload)
 }
 
-export function emitJobAccepted(
-  jobId: string,
-  transporterId: string,
-  transporter: object
-): void {
-  const payload = { jobId, transporterId, transporter };
-  io.to('ops-room').emit('transport:job-accepted', payload);
-  io.to('role:nurse').emit('transport:job-accepted', payload);
+export function emitJobAccepted(jobId: string, transporterId: string, transporter: object): void {
+  if (!io) return
+  const payload = { jobId, transporterId, transporter }
+  io.to('ops-room').emit('transport:job-accepted', payload)
+  io.to('role:nurse').emit('transport:job-accepted', payload)
 }
 
 export function emitAlert(alert: object): void {
-  io.to('ops-room').emit('alert:new', { alert });
-  io.to('role:supervisor').emit('alert:new', { alert });
-  io.to('role:admin').emit('alert:new', { alert });
+  if (!io) return
+  io.to('ops-room').emit('alert:new', { alert })
+  io.to('role:supervisor').emit('alert:new', { alert })
+  io.to('role:admin').emit('alert:new', { alert })
 }
 
 export function emitAlertResolved(alertId: string): void {
-  io.to('ops-room').emit('alert:resolved', { alertId });
+  if (!io) return
+  io.to('ops-room').emit('alert:resolved', { alertId })
 }
 
-export function emitStaffStatusUpdate(
-  staffId: string,
-  status: boolean,
-  currentTask: string | null
-): void {
-  const payload = { staffId, status, currentTask };
-  io.to('ops-room').emit('staff:status-updated', payload);
+export function emitStaffStatusUpdate(staffId: string, status: boolean, currentTask: string | null): void {
+  if (!io) return
+  io.to('ops-room').emit('staff:status-updated', { staffId, status, currentTask })
 }
 
-export function emitActivityEntry(
-  type: string,
-  message: string,
-  data: object | null,
-  createdAt: Date
-): void {
-  const payload = { type, message, data, createdAt };
-  io.to('ops-room').emit('activity:new', payload);
+export function emitActivityEntry(type: string, message: string, data: object | null, createdAt: Date): void {
+  if (!io) return
+  io.to('ops-room').emit('activity:new', { type, message, data, createdAt })
 }
