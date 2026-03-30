@@ -84,6 +84,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const storedUser = localStorage.getItem(USER_KEY);
 
       if (!storedToken || !storedUser) {
+        // Auto-login with supervisor account
+        try {
+          await login('supervisor@hospital.com', 'password123');
+        } catch {
+          // ignore, will show login page
+        }
         setIsLoading(false);
         return;
       }
