@@ -20,3 +20,5 @@ export function LoadingSpinner({ size = 'md', color = 'text-teal-600' }: Loading
     </div>
   );
 }
+
+export default LoadingSpinner;
