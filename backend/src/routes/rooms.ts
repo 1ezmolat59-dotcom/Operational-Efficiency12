@@ -28,7 +28,7 @@ router.get('/', requireRole('supervisor', 'admin'), async (req: AuthRequest, res
   try {
     const wingId = req.query.wingId as string | undefined
     const rooms = await getRoomStatus(wingId)
-    res.json({ rooms })
+    res.json(rooms)
   } catch (error) {
     console.error('[Rooms] List error:', error)
     res.status(500).json({ error: 'Failed to fetch rooms', code: 'SERVER_ERROR' })
